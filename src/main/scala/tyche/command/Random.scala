@@ -159,7 +159,11 @@ class Random[F[_]: {Temporal, LoggerFactory}](
               } else ().pure[F]
             result <- rollUntilInRange(chatId, selected.size)
           yield result
-        else secureRandom.betweenInt(0, selected.size).map(_.some)
+        else
+          for
+            _      <- rollDice(chatId)
+            winner <- secureRandom.betweenInt(0, selected.size)
+          yield winner.some
       _ <- winnerIdxOpt match
         case Some(idx) =>
           val winner = selected(idx)
@@ -204,8 +208,7 @@ class Random[F[_]: {Temporal, LoggerFactory}](
   @SuppressWarnings(Array("org.wartremover.warts.Recursion"))
   private def rollUntilInRange(chatId: Long, count: Int): F[Option[Int]] =
     for
-      diceMsg <- sendDice(ChatIntId(chatId), emoji = "🎲".some).exec
-      _       <- Temporal[F].sleep(4.seconds)
+      diceMsg <- rollDice(chatId)
       result  <- diceMsg.dice match
         case None =>
           error"[$cmd] chat=$chatId dice message returned without dice payload: $diceMsg"
@@ -214,6 +217,12 @@ class Random[F[_]: {Temporal, LoggerFactory}](
           if dice.value <= count then (dice.value - 1).some.pure[F]
           else rollUntilInRange(chatId, count)
     yield result
+
+  private def rollDice(chatId: Long): F[Message] =
+    for
+      diceMsg <- sendDice(ChatIntId(chatId), emoji = "🎲".some).exec
+      _       <- Temporal[F].sleep(4.seconds)
+    yield diceMsg
 
   private def buildKeyboard(items: Vector[String], selected: Set[Int]): List[List[InlineKeyboardButton]] =
     val pickRow            = List(InlineKeyboardButton(text = "🎲", callbackData = "random:roll".some))
