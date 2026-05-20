@@ -1,7 +1,7 @@
 import Dependencies.*
 import org.typelevel.scalacoptions.ScalacOptions
 
-ThisBuild / version := "0.0.1"
+ThisBuild / version := "0.0.2"
 
 ThisBuild / scalaVersion := "3.8.3"
 
