@@ -13,6 +13,7 @@ import telegramium.bots.*
 import telegramium.bots.client.Method
 import telegramium.bots.high.*
 import tyche.store.InMemStore
+import tyche.util.TtlMap
 
 import scala.concurrent.duration.*
 
@@ -32,12 +33,25 @@ class SetItemsSpec extends AsyncWordSpec, AsyncIOSpec, Matchers:
     "chat"       -> Json.obj("id" -> chatId.asJson, "type" -> "private".asJson)
   )
 
-  private def makeApi(sentTexts: Ref[IO, List[String]]): Api[IO] =
+  private def makeApi(
+      sentTexts: Ref[IO, List[String]],
+      deletedMessages: Ref[IO, List[Int]] = Ref.unsafe[IO, List[Int]](Nil)
+  ): Api[IO] =
     new Api[IO]:
       def execute[Res](method: Method[Res]): IO[Res] =
-        val text = method.payload.json.hcursor.get[String]("text").toOption
-        text.fold(IO.unit)(t => sentTexts.update(_ :+ t)) *>
-          IO.fromEither(method.decoder.decodeJson(stubMessageJson).left.map(e => new RuntimeException(e.message)))
+        method.payload.name match
+          case "deleteMessage" =>
+            val msgId = method.payload.json.hcursor.get[Int]("message_id").toOption.getOrElse(-1)
+            for
+              _   <- deletedMessages.update(_ :+ msgId)
+              res <- IO.fromEither(method.decoder.decodeJson(Json.True))
+            yield res
+          case _ =>
+            val text = method.payload.json.hcursor.get[String]("text").toOption
+            for
+              _   <- text.fold(IO.unit)(t => sentTexts.update(_ :+ t))
+              res <- IO.fromEither(method.decoder.decodeJson(stubMessageJson))
+            yield res
 
   private val user = User(id = userId, isBot = false, firstName = "Test")
 
@@ -140,6 +154,28 @@ class SetItemsSpec extends AsyncWordSpec, AsyncIOSpec, Matchers:
               }
             }
           yield stored.toList shouldBe empty
+        }
+      }
+    }
+
+    "the prompt expires without a reply" should {
+      "delete the orphaned prompt message via the API" in {
+        TestControl.executeEmbed {
+          for
+            store         <- InMemStore.empty[IO]
+            texts         <- Ref.of[IO, List[String]](Nil)
+            deleted       <- Ref.of[IO, List[Int]](Nil)
+            deletedMsgIds <- {
+              given Api[IO] = makeApi(texts, deleted)
+              SetItems.make[IO](store, awaitTtl).use { cmd =>
+                for
+                  _       <- cmd.onMessage(commandMsg)
+                  _       <- IO.sleep(awaitTtl + TtlMap.DefaultSweepInterval + 1.second)
+                  deleted <- deleted.get
+                yield deleted
+              }
+            }
+          yield deletedMsgIds shouldBe List(promptMessageId)
         }
       }
     }

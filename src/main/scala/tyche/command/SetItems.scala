@@ -4,6 +4,7 @@ import cats.Monad
 import cats.data.Chain
 import cats.effect.{Async, Resource}
 import cats.syntax.applicative.*
+import cats.syntax.applicativeError.*
 import cats.syntax.eq.*
 import cats.syntax.flatMap.*
 import cats.syntax.functor.*
@@ -13,7 +14,7 @@ import org.typelevel.log4cats.syntax.*
 import org.typelevel.log4cats.{Logger, LoggerFactory}
 import telegramium.bots.*
 import telegramium.bots.high.*
-import telegramium.bots.high.Methods.sendMessage
+import telegramium.bots.high.Methods.{deleteMessage, sendMessage}
 import telegramium.bots.high.implicits.*
 import tyche.UserShow.given
 import tyche.command.SetItems.Cmd
@@ -103,7 +104,8 @@ class SetItems[F[_]: {Monad, LoggerFactory}](
     }
 
 object SetItems:
-  val Cmd = "/set_items"
+  private val loggerName = classOf[SetItems[?]].getName
+  val Cmd                = "/set_items"
 
   /** Creates a [[SetItems]] command, supervising an internal [[TtlMap]] of pending prompts under the returned
     * [[cats.effect.Resource]].
@@ -118,6 +120,15 @@ object SetItems:
       store: ItemStore[F],
       awaitTtl: FiniteDuration
   )(using Api[F]): Resource[F, SetItems[F]] =
+    given Logger[F] = LoggerFactory[F].getLoggerFromName(loggerName)
     TtlMap
-      .make[F, Long, AwaitingItems](awaitTtl)
+      .makeWithOnEvict[F, Long, AwaitingItems](
+        awaitTtl,
+        TtlMap.DefaultSweepInterval,
+        onEvict = (chatId, awaiting) =>
+          deleteMessage(ChatIntId(chatId), awaiting.promptMessageId).exec.void
+            .onError { case e =>
+              warn"Failed to delete orphaned $Cmd prompt chat=$chatId msg=${awaiting.promptMessageId}: ${e.getMessage}"
+            }
+      )
       .map(new SetItems(store, _))
